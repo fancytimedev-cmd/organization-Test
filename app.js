@@ -16,16 +16,13 @@ let sfUsersCache = [];
 let cacheTimestamp = 0; 
 const CACHE_TTL = 5 * 60 * 1000; 
 
-// 1. 슬랙 워크스페이스의 모든 유저 사진을 가져오는 함수
 async function getSlackAvatars(client) {
   try {
     const result = await client.users.list();
     const avatarMap = {};
     
-    // 이메일을 열쇠(Key)로, 사진 URL을 값(Value)으로 하는 딕셔너리 생성
     result.members.forEach(member => {
       if (member.profile && member.profile.email) {
-        // 해상도가 좋은 image_192 사이즈를 가져옵니다.
         avatarMap[member.profile.email] = member.profile.image_192; 
       }
     });
@@ -36,25 +33,25 @@ async function getSlackAvatars(client) {
   }
 }
 
-// 2. 세일즈포스 데이터와 슬랙 사진을 합치는 함수
 async function getCachedOrgData(client) {
   const now = Date.now();
   
   if (sfUsersCache.length === 0 || (now - cacheTimestamp > CACHE_TTL)) {
     console.log('⏳ 세일즈포스 & 슬랙에서 최신 데이터를 가져와 조립합니다...');
     
-    // 두 작업을 동시에 실행하여 속도 최적화 (Promise.all)
     const [sfData, slackAvatars] = await Promise.all([
       getOrgData(),
       getSlackAvatars(client)
     ]);
 
-    // 세일즈포스 데이터에 슬랙 프로필 사진 URL 끼워넣기
     sfUsersCache = sfData.map(user => {
+      // ✨ [수정됨] 슬랙 사진이 없을 경우, 직원 이름으로 예쁜 기본 프로필 이미지를 자동 생성합니다!
+      // URL 인코딩을 통해 한글 이름(홍길동)도 깨지지 않게 처리합니다.
+      const defaultAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.Name)}&background=random&color=fff&size=192`;
+
       return {
         ...user,
-        // 이메일이 일치하면 슬랙 사진, 없으면 슬랙 기본 회색 사람 이미지
-        SlackAvatar: slackAvatars[user.Email] || "https://a.slack-edge.com/80588/img/avatars-teams/ava_0000-192.png"
+        SlackAvatar: slackAvatars[user.Email] || defaultAvatar
       };
     });
     
@@ -69,7 +66,6 @@ async function getCachedOrgData(client) {
 // 🎨 [공통 함수] App Home 화면을 그려주는 함수
 // ---------------------------------------------------------
 async function updateHomeView(client, userId, selectedDepartment = 'all') {
-  // 캐시 함수에 client(슬랙 봇 객체)를 전달해야 사진을 긁어올 수 있습니다!
   const sfUsers = await getCachedOrgData(client); 
 
   const departments = [...new Set(sfUsers.map(u => u.Department).filter(Boolean))]
@@ -88,42 +84,24 @@ async function updateHomeView(client, userId, selectedDepartment = 'all') {
     filteredUsers = sfUsers.filter(u => u.Department === selectedDepartment);
   }
 
-  // 4. 필터링된 유저 데이터를 슬랙 UI 블록으로 변환 (UI 구조 변경)
-  const userBlocks = [];
-  filteredUsers.forEach(user => {
+  const userBlocks = filteredUsers.map(user => {
     const title = user.Title || '직책 없음';
     const dept = user.Department || '소속 없음';
-    const userDataStr = JSON.stringify(user);
+    const userDataStr = JSON.stringify(user); 
 
-    // 구역 1: 이름, 정보, 그리고 프로필 사진
-    userBlocks.push({
+    return {
       "type": "section",
       "text": { 
         "type": "mrkdwn", 
-        "text": `*${user.Name}*\n${title} | ${dept}\n📧 ${user.Email}` 
+        "text": `*${user.Name}*\n${title} | ${dept}` 
       },
       "accessory": {
-        "type": "image",
-        "image_url": user.SlackAvatar,
-        "alt_text": `${user.Name}의 프로필 사진`
+        "type": "button",
+        "text": { "type": "plain_text", "text": "🔍 상세보기" },
+        "value": userDataStr,
+        "action_id": "open_user_modal"
       }
-    });
-
-    // 구역 2: 상세보기 버튼 (사진과 버튼을 같이 둘 수 없어서 아래로 뺐습니다)
-    userBlocks.push({
-      "type": "actions",
-      "elements": [
-        {
-          "type": "button",
-          "text": { "type": "plain_text", "text": "🔍 프로필 상세보기" },
-          "value": userDataStr,
-          "action_id": "open_user_modal"
-        }
-      ]
-    });
-
-    // 구분선 추가
-    userBlocks.push({ "type": "divider" });
+    };
   });
 
   if (userBlocks.length === 0) {
@@ -148,6 +126,13 @@ async function updateHomeView(client, userId, selectedDepartment = 'all') {
               "options": filterOptions,
               "initial_option": filterOptions.find(opt => opt.value === selectedDepartment),
               "action_id": "filter_department"
+            },
+            // ✨ [새로 추가됨] 수동 새로고침 버튼
+            {
+              "type": "button",
+              "text": { "type": "plain_text", "text": "🔄 최신 데이터 불러오기" },
+              "style": "primary", // 파란색으로 강조
+              "action_id": "refresh_data"
             }
           ]
         },
@@ -190,6 +175,33 @@ app.action('filter_department', async ({ ack, body, client, logger }) => {
   }
 });
 
+// ✨ [새로 추가됨] 새로고침 버튼을 눌렀을 때 동작하는 로직
+app.action('refresh_data', async ({ ack, body, client, logger }) => {
+  await ack();
+  try {
+    // 1. 사용자에게 먼저 로딩 화면을 보여줌
+    await client.views.publish({
+      user_id: body.user.id,
+      view: {
+        type: 'home',
+        blocks: [
+          { "type": "header", "text": { "type": "plain_text", "text": "🏢 우리회사 조직도" } },
+          { "type": "section", "text": { "type": "mrkdwn", "text": "\n\n⏳ *세일즈포스에서 최신 데이터를 가져오는 중입니다...*\n\n" } }
+        ]
+      }
+    });
+
+    // 2. 강제로 캐시 바구니를 비워버림 (핵심!)
+    sfUsersCache = [];
+    cacheTimestamp = 0;
+
+    // 3. 화면을 다시 그림 (캐시가 비었으므로 세일즈포스에 새로 접속하게 됨)
+    await updateHomeView(client, body.user.id, 'all');
+  } catch (error) {
+    logger.error('새로고침 에러:', error);
+  }
+});
+
 app.action('open_user_modal', async ({ ack, body, client, logger }) => {
   await ack();
   try {
@@ -205,7 +217,6 @@ app.action('open_user_modal', async ({ ack, body, client, logger }) => {
         type: 'modal',
         title: { type: 'plain_text', text: `${user.Name} 프로필` },
         blocks: [
-          // 팝업창 상단에도 프로필 사진을 큼직하게 띄워줍니다!
           {
             "type": "section",
             "text": { "type": "mrkdwn", "text": `*${user.Name}*\n${user.Title || '직책 없음'} | ${user.Department || '소속 없음'}` },
@@ -228,9 +239,7 @@ app.action('open_user_modal', async ({ ack, body, client, logger }) => {
   }
 });
 
-// 봇 실행
 (async () => {
-  // 서버가 지정해 주는 포트가 있으면 그걸 쓰고, 없으면 3000번을 쓴다는 의미입니다.
   await app.start(process.env.PORT || 3000);
-  console.log('⚡️ 성공! 클라우드 서버에서 봇이 돌아갑니다!');
+  console.log('⚡️ 성공! 새로고침 버튼과 사진 기능이 탑재된 봇이 돌아갑니다!');
 })();
