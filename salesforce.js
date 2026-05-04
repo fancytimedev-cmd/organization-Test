@@ -22,7 +22,7 @@ async function getOrgData() {
     // SOQL 쿼리를 사용해 필요한 유저 데이터를 가져옵니다.
     // 활성화된 유저(IsActive=true) 중 이름, 직함, 부서, 매니저ID 등을 가져옵니다.
     
-    const query = "SELECT Id, Name, Department,Title, Email, Phone, City, Street, Manager.Name FROM User WHERE IsActive = true";
+    const query = "SELECT Id, Name, Department,Title, Email, Phone, City, Street, Manager.Name FROM User WHERE IsActive = true AND Department != null";
     const result = await conn.query(query);
 
     console.log(`✅ 총 ${result.totalSize}명의 유저 데이터를 가져왔습니다.`);
