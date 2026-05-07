@@ -240,6 +240,14 @@ app.action('open_user_modal', async ({ ack, body, client, logger }) => {
 });
 
 (async () => {
-  await app.start(process.env.PORT || 3000);
-  console.log('⚡️ 성공! 새로고침 버튼과 사진 기능이 탑재된 봇이 돌아갑니다!');
+  // Render는 process.env.PORT라는 이름으로 포트 번호를 던져줍니다.
+  // 이걸 받아서 실행해야 Render가 "아, 서버가 문을 열었구나!" 하고 안심합니다.
+  const port = process.env.PORT || 3000;
+
+  try {
+    await app.start(port);
+    console.log(`⚡️ 성공! 포트 ${port}번에서 봇이 활기차게 돌아갑니다!`);
+  } catch (error) {
+    console.error('❌ 봇 시작 에러:', error);
+  }
 })();
